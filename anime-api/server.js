@@ -1,94 +1,82 @@
 /**
- * Simple Anime API Server
- * A minimal, non-modular anime API for streaming PWA
+ * Simple Anime API Server (HiAnime Provider)
+ * A minimal, standalone anime API - NO DATABASE REQUIRED
+ * Uses HiAnime (aniwatch-api) as the data source
+ * 
+ * Self-host aniwatch-api: https://github.com/ghoshRitesh12/aniwatch-api
  * 
  * Endpoints:
- * - GET  /api/home              - Get home page data (recent, slider, airing)
- * - GET  /api/anime/:id         - Get anime info by ID or slug
+ * - GET  /api/home              - Get home page data
+ * - GET  /api/anime/:id         - Get anime info
  * - GET  /api/anime/:id/episodes - Get anime episodes
- * - GET  /api/search?q=         - Search anime by name
+ * - GET  /api/episode/:episodeId/servers - Get episode servers
+ * - GET  /api/episode/:episodeId/sources - Get streaming sources
+ * - GET  /api/search?q=         - Search anime
  * - GET  /api/genre/:genre      - Get anime by genre
- * - GET  /api/airing            - Get currently airing anime
- * - GET  /api/top-rated         - Get top rated anime
- * - GET  /api/random            - Get random anime
- * - GET  /api/total             - Get total anime count
+ * - GET  /api/category/:category - Get anime by category
+ * - GET  /api/schedule?date=    - Get anime schedule
+ * - GET  /api/az-list/:letter   - A-Z anime list
  */
 
 const express = require('express');
-const mongoose = require('mongoose');
 const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// HiAnime API base URL - self-host your own: https://github.com/ghoshRitesh12/aniwatch-api
+const HIANIME_API = process.env.HIANIME_API_URL || 'https://api.example.com';
+
 // Middleware
 app.use(cors());
 app.use(express.json());
 
 // ============================================
-// DATABASE SCHEMA
-// ============================================
-const EpisodeSchema = new mongoose.Schema({
-  _id: { type: String, required: false },
-  name: { type: String, trim: true },
-  link: { type: String, trim: true },
-  title: { type: String, trim: true }
-});
-
-const AnimeSchema = new mongoose.Schema({
-  _id: { type: Number, required: false },
-  name: { type: String, required: true },
-  Name: { type: String, required: true, trim: true },
-  finder: { type: String, trim: true }, // URL-friendly slug
-  ImagePath: { type: String, trim: true },
-  Cover: { type: String, trim: true },
-  Synonyms: { type: String, trim: true },
-  link: { type: String, trim: true },
-  title: { type: String, trim: true },
-  poster: { type: String, trim: true },
-  MALID: { type: String, trim: true },
-  Aired: { type: String, trim: true },
-  Premiered: { type: String, trim: true },
-  Duration: { type: String, trim: true },
-  Status: { type: String, trim: true },
-  MALScore: { type: String, trim: true },
-  RatingsNum: { type: Number, min: 0 },
-  Genres: { type: Array, required: true },
-  Studios: { type: String, trim: true },
-  Producers: { type: String, trim: true },
-  DescripTion: { type: String, trim: true },
-  type: { type: String, trim: true, enum: ['iframe', 'mp4', 'other'] },
-  ep: [EpisodeSchema]
-}, { timestamps: true });
-
-const SliderSchema = new mongoose.Schema({
-  _id: Number,
-  slArray: [Number]
-});
-
-const Anime = mongoose.model('AniDB', AnimeSchema);
-const Slider = mongoose.model('slider', SliderSchema);
-
-// ============================================
 // HELPER FUNCTIONS
 // ============================================
-const DEFAULT_FIELDS = { Name: 1, ImagePath: 1, DescripTion: 1, _id: 1, MALScore: 1, RatingsNum: 1, finder: 1 };
 
-function changeStreamType(link, type) {
-  if (!link) return link;
-  if (link.includes('type=')) {
-    return link.replace(/type=(sub|dub)/i, `type=${type}`);
+async function fetchHiAnime(endpoint) {
+  try {
+    const url = `${HIANIME_API}/api/v2/hianime${endpoint}`;
+    console.log(`[API] Fetching: ${url}`);
+    
+    const response = await fetch(url, {
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'AnimeAPI/1.0'
+      }
+    });
+    
+    if (!response.ok) {
+      console.error(`[API] Error ${response.status}: ${response.statusText}`);
+      return null;
+    }
+    
+    const data = await response.json();
+    return data.success ? data.data : null;
+  } catch (err) {
+    console.error('[API] Fetch error:', err.message);
+    return null;
   }
-  if (link.match(/\/(sub|dub)/i)) {
-    return link.replace(/\/(sub|dub)/i, `/${type}`);
-  }
-  return link;
 }
 
-function paginate(page = 1, limit = 20) {
-  const p = Math.max(1, parseInt(page) || 1);
-  return { skip: (p - 1) * limit, limit, page: p };
+function normalizeAnime(anime) {
+  if (!anime) return null;
+  return {
+    id: anime.id,
+    name: anime.name,
+    jname: anime.jname,
+    poster: anime.poster,
+    description: anime.description,
+    type: anime.type,
+    duration: anime.duration,
+    rating: anime.rating,
+    quality: anime.quality,
+    episodes: anime.episodes,
+    rank: anime.rank,
+    otherInfo: anime.otherInfo
+  };
 }
 
 // ============================================
@@ -97,147 +85,163 @@ function paginate(page = 1, limit = 20) {
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-// Get total anime count
-app.get('/api/total', async (req, res) => {
-  try {
-    const total = await Anime.countDocuments();
-    res.json({ total });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to get count' });
-  }
+  res.json({ 
+    status: 'ok', 
+    provider: 'HiAnime',
+    apiUrl: HIANIME_API,
+    timestamp: new Date().toISOString() 
+  });
 });
 
 // Home page data
 app.get('/api/home', async (req, res) => {
   try {
-    // Recent anime
-    const recent = await Anime.find({}, DEFAULT_FIELDS)
-      .sort({ updatedAt: -1 })
-      .limit(20);
-
-    // Slider/featured anime
-    let featured = [];
-    const sliderDoc = await Slider.findById(1);
-    if (sliderDoc?.slArray?.length) {
-      featured = await Anime.find({ _id: { $in: sliderDoc.slArray } });
+    const data = await fetchHiAnime('/home');
+    
+    if (!data) {
+      return res.status(503).json({ error: 'Failed to fetch home data from provider' });
     }
 
-    // Currently airing (random selection)
-    const airing = await Anime.aggregate([
-      { $match: { Status: 'Ongoing' } },
-      { $sample: { size: 20 } },
-      { $project: DEFAULT_FIELDS }
-    ]);
-
-    res.json({ recent, featured, airing });
+    res.json({
+      spotlight: data.spotlightAnimes?.map(normalizeAnime) || [],
+      trending: data.trendingAnimes?.map(normalizeAnime) || [],
+      latest: data.latestEpisodeAnimes?.map(normalizeAnime) || [],
+      topAiring: data.topAiringAnimes?.map(normalizeAnime) || [],
+      mostPopular: data.mostPopularAnimes?.map(normalizeAnime) || [],
+      mostFavorite: data.mostFavoriteAnimes?.map(normalizeAnime) || [],
+      latestCompleted: data.latestCompletedAnimes?.map(normalizeAnime) || [],
+      topUpcoming: data.topUpcomingAnimes?.map(normalizeAnime) || [],
+      top10: data.top10Animes || { today: [], week: [], month: [] },
+      genres: data.genres || []
+    });
   } catch (err) {
     console.error('Home API error:', err);
     res.status(500).json({ error: 'Failed to fetch home data' });
   }
 });
 
-// Get anime by ID or slug
+// Get anime info
 app.get('/api/anime/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { type = 'sub' } = req.query;
+    const data = await fetchHiAnime(`/anime/${id}`);
     
-    let anime;
-    if (!isNaN(id)) {
-      anime = await Anime.findById(Number(id));
-    } else {
-      anime = await Anime.findOne({ finder: id });
-    }
-
-    if (!anime) {
+    if (!data) {
       return res.status(404).json({ error: 'Anime not found' });
     }
 
-    // Transform episode links based on type (sub/dub)
-    const result = anime.toObject();
-    result.link = changeStreamType(result.link, type);
-    if (result.ep?.length) {
-      result.ep = result.ep.map(ep => ({
-        ...ep,
-        link: changeStreamType(ep.link, type)
-      }));
-    }
-    result.epCount = result.ep?.length || 0;
-
-    res.json(result);
+    res.json({
+      info: data.anime?.info || {},
+      moreInfo: data.anime?.moreInfo || {},
+      seasons: data.seasons || [],
+      relatedAnimes: data.relatedAnimes || [],
+      recommendedAnimes: data.recommendedAnimes || [],
+      mostPopularAnimes: data.mostPopularAnimes || []
+    });
   } catch (err) {
     console.error('Anime fetch error:', err);
     res.status(500).json({ error: 'Failed to fetch anime' });
   }
 });
 
-// Get anime info (without episodes - lighter response)
-app.get('/api/anime/:id/info', async (req, res) => {
+// Get anime quick info (tooltip/preview)
+app.get('/api/anime/:id/quick', async (req, res) => {
   try {
     const { id } = req.params;
+    const data = await fetchHiAnime(`/qtip/${id}`);
     
-    let query;
-    if (!isNaN(id)) {
-      query = { _id: Number(id) };
-    } else {
-      query = { finder: id };
-    }
-
-    const anime = await Anime.findOne(query, {
-      Genres: 1, Cover: 1, Synonyms: 1, Producers: 1, Premiered: 1,
-      Aired: 1, Duration: 1, Status: 1, Studios: 1, Name: 1, ImagePath: 1,
-      DescripTion: 1, _id: 1, MALScore: 1, RatingsNum: 1, finder: 1, MALID: 1,
-      epCount: { $size: '$ep' }
-    });
-
-    if (!anime) {
+    if (!data) {
       return res.status(404).json({ error: 'Anime not found' });
     }
 
-    res.json(anime);
+    res.json(data.anime || {});
   } catch (err) {
-    console.error('Anime info error:', err);
+    console.error('Quick info error:', err);
     res.status(500).json({ error: 'Failed to fetch anime info' });
   }
 });
 
-// Get anime episodes only
+// Get anime episodes
 app.get('/api/anime/:id/episodes', async (req, res) => {
   try {
     const { id } = req.params;
-    const { type = 'sub' } = req.query;
+    const data = await fetchHiAnime(`/anime/${id}/episodes`);
     
-    let query;
-    if (!isNaN(id)) {
-      query = { _id: Number(id) };
-    } else {
-      query = { finder: id };
+    if (!data) {
+      return res.status(404).json({ error: 'Episodes not found' });
     }
-
-    const anime = await Anime.findOne(query, { ep: 1, link: 1, Name: 1, _id: 1 });
-
-    if (!anime) {
-      return res.status(404).json({ error: 'Anime not found' });
-    }
-
-    const episodes = (anime.ep || []).map(ep => ({
-      ...ep.toObject(),
-      link: changeStreamType(ep.link, type)
-    }));
 
     res.json({
-      id: anime._id,
-      name: anime.Name,
-      mainLink: changeStreamType(anime.link, type),
-      epCount: episodes.length,
-      episodes
+      totalEpisodes: data.totalEpisodes || 0,
+      episodes: data.episodes || []
     });
   } catch (err) {
     console.error('Episodes fetch error:', err);
     res.status(500).json({ error: 'Failed to fetch episodes' });
+  }
+});
+
+// Get next episode schedule for an anime
+app.get('/api/anime/:id/schedule', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const data = await fetchHiAnime(`/anime/${id}/schedule`);
+    
+    res.json(data || { scheduledAt: null });
+  } catch (err) {
+    console.error('Schedule fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch schedule' });
+  }
+});
+
+// Get episode servers
+app.get('/api/episode/:episodeId/servers', async (req, res) => {
+  try {
+    const { episodeId } = req.params;
+    const data = await fetchHiAnime(`/episode/servers?animeEpisodeId=${episodeId}`);
+    
+    if (!data) {
+      return res.status(404).json({ error: 'Servers not found' });
+    }
+
+    res.json({
+      episodeId: data.episodeId,
+      episodeNo: data.episodeNo,
+      sub: data.sub || [],
+      dub: data.dub || [],
+      raw: data.raw || []
+    });
+  } catch (err) {
+    console.error('Servers fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch servers' });
+  }
+});
+
+// Get episode streaming sources
+app.get('/api/episode/:episodeId/sources', async (req, res) => {
+  try {
+    const { episodeId } = req.params;
+    const { server = 'hd-1', category = 'sub' } = req.query;
+    
+    const data = await fetchHiAnime(
+      `/episode/sources?animeEpisodeId=${episodeId}&server=${server}&category=${category}`
+    );
+    
+    if (!data) {
+      return res.status(404).json({ error: 'Sources not found' });
+    }
+
+    res.json({
+      tracks: data.tracks || [],
+      intro: data.intro || {},
+      outro: data.outro || {},
+      sources: data.sources || [],
+      anilistID: data.anilistID,
+      malID: data.malID
+    });
+  } catch (err) {
+    console.error('Sources fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch sources' });
   }
 });
 
@@ -247,43 +251,46 @@ app.get('/api/search', async (req, res) => {
     const { q, page = 1 } = req.query;
 
     if (!q || q.length < 2) {
-      return res.json({ results: [], page: 1, query: q });
+      return res.json({ results: [], page: 1, query: q, hasNextPage: false });
     }
 
-    const { skip, limit, page: currentPage } = paginate(page);
-    const regex = new RegExp(q, 'i');
+    const data = await fetchHiAnime(`/search?q=${encodeURIComponent(q)}&page=${page}`);
+    
+    if (!data) {
+      return res.json({ results: [], page: 1, query: q, hasNextPage: false });
+    }
 
-    const results = await Anime.find(
-      { Name: { $regex: regex } },
-      DEFAULT_FIELDS
-    ).skip(skip).limit(limit);
-
-    res.json({ results, page: currentPage, query: q });
+    res.json({
+      results: data.animes?.map(normalizeAnime) || [],
+      mostPopular: data.mostPopularAnimes?.map(normalizeAnime) || [],
+      page: data.currentPage || 1,
+      totalPages: data.totalPages || 1,
+      hasNextPage: data.hasNextPage || false,
+      query: q
+    });
   } catch (err) {
     console.error('Search error:', err);
     res.status(500).json({ error: 'Search failed' });
   }
 });
 
-// Quick search (for autocomplete)
-app.get('/api/search/quick', async (req, res) => {
+// Search suggestions (autocomplete)
+app.get('/api/search/suggest', async (req, res) => {
   try {
     const { q } = req.query;
 
     if (!q || q.length < 2) {
-      return res.json([]);
+      return res.json({ suggestions: [] });
     }
 
-    const regex = new RegExp(q, 'i');
-    const results = await Anime.find(
-      { Name: { $regex: regex } },
-      { Name: 1, ImagePath: 1, _id: 1, finder: 1 }
-    ).limit(10);
-
-    res.json(results);
+    const data = await fetchHiAnime(`/search/suggestion?q=${encodeURIComponent(q)}`);
+    
+    res.json({
+      suggestions: data?.suggestions || []
+    });
   } catch (err) {
-    console.error('Quick search error:', err);
-    res.status(500).json({ error: 'Search failed' });
+    console.error('Suggestion error:', err);
+    res.status(500).json({ error: 'Suggestion failed' });
   }
 });
 
@@ -292,184 +299,327 @@ app.get('/api/genre/:genre', async (req, res) => {
   try {
     const { genre } = req.params;
     const { page = 1 } = req.query;
-    const { skip, limit, page: currentPage } = paginate(page);
 
-    const results = await Anime.find(
-      { Genres: genre.toLowerCase() },
-      DEFAULT_FIELDS
-    ).skip(skip).limit(limit);
+    const data = await fetchHiAnime(`/genre/${genre}?page=${page}`);
+    
+    if (!data) {
+      return res.json({ results: [], page: 1, genre, hasNextPage: false });
+    }
 
-    res.json({ results, page: currentPage, genre });
+    res.json({
+      results: data.animes?.map(normalizeAnime) || [],
+      page: data.currentPage || 1,
+      totalPages: data.totalPages || 1,
+      hasNextPage: data.hasNextPage || false,
+      genre,
+      genreInfo: data.genreName
+    });
   } catch (err) {
     console.error('Genre search error:', err);
     res.status(500).json({ error: 'Failed to fetch by genre' });
   }
 });
 
-// Get currently airing anime
+// Get anime by category (e.g., subbed-anime, dubbed-anime, movie, tv, ova, ona, special, most-popular, etc.)
+app.get('/api/category/:category', async (req, res) => {
+  try {
+    const { category } = req.params;
+    const { page = 1 } = req.query;
+
+    const data = await fetchHiAnime(`/category/${category}?page=${page}`);
+    
+    if (!data) {
+      return res.json({ results: [], page: 1, category, hasNextPage: false });
+    }
+
+    res.json({
+      results: data.animes?.map(normalizeAnime) || [],
+      top10Animes: data.top10Animes || { today: [], week: [], month: [] },
+      page: data.currentPage || 1,
+      totalPages: data.totalPages || 1,
+      hasNextPage: data.hasNextPage || false,
+      category,
+      categoryInfo: data.category
+    });
+  } catch (err) {
+    console.error('Category search error:', err);
+    res.status(500).json({ error: 'Failed to fetch by category' });
+  }
+});
+
+// Get producer/studio anime
+app.get('/api/producer/:producerId', async (req, res) => {
+  try {
+    const { producerId } = req.params;
+    const { page = 1 } = req.query;
+
+    const data = await fetchHiAnime(`/producer/${producerId}?page=${page}`);
+    
+    if (!data) {
+      return res.json({ results: [], page: 1, hasNextPage: false });
+    }
+
+    res.json({
+      results: data.animes?.map(normalizeAnime) || [],
+      producerName: data.producerName,
+      page: data.currentPage || 1,
+      totalPages: data.totalPages || 1,
+      hasNextPage: data.hasNextPage || false
+    });
+  } catch (err) {
+    console.error('Producer search error:', err);
+    res.status(500).json({ error: 'Failed to fetch by producer' });
+  }
+});
+
+// Get anime schedule
+app.get('/api/schedule', async (req, res) => {
+  try {
+    // Format: YYYY-MM-DD
+    const { date } = req.query;
+    const scheduleDate = date || new Date().toISOString().split('T')[0];
+
+    const data = await fetchHiAnime(`/schedule?date=${scheduleDate}`);
+    
+    if (!data) {
+      return res.json({ scheduledAnimes: [], date: scheduleDate });
+    }
+
+    res.json({
+      scheduledAnimes: data.scheduledAnimes || [],
+      date: scheduleDate
+    });
+  } catch (err) {
+    console.error('Schedule fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch schedule' });
+  }
+});
+
+// A-Z List
+app.get('/api/az-list/:letter', async (req, res) => {
+  try {
+    const { letter } = req.params;
+    const { page = 1 } = req.query;
+
+    // Valid: all, other, 0-9, a-z
+    const data = await fetchHiAnime(`/azlist/${letter.toLowerCase()}?page=${page}`);
+    
+    if (!data) {
+      return res.json({ results: [], page: 1, hasNextPage: false });
+    }
+
+    res.json({
+      results: data.animes?.map(normalizeAnime) || [],
+      sortOption: data.sortOption,
+      page: data.currentPage || 1,
+      totalPages: data.totalPages || 1,
+      hasNextPage: data.hasNextPage || false
+    });
+  } catch (err) {
+    console.error('AZ list error:', err);
+    res.status(500).json({ error: 'Failed to fetch A-Z list' });
+  }
+});
+
+// ============================================
+// CONVENIENCE ENDPOINTS (Mapped from categories)
+// ============================================
+
+// Currently airing
 app.get('/api/airing', async (req, res) => {
   try {
     const { page = 1 } = req.query;
-    const { skip, limit, page: currentPage } = paginate(page);
-
-    const results = await Anime.find(
-      { Status: 'Ongoing' },
-      DEFAULT_FIELDS
-    ).sort({ updatedAt: -1 }).skip(skip).limit(limit);
-
-    res.json({ results, page: currentPage });
+    const data = await fetchHiAnime(`/category/top-airing?page=${page}`);
+    
+    res.json({
+      results: data?.animes?.map(normalizeAnime) || [],
+      page: data?.currentPage || 1,
+      totalPages: data?.totalPages || 1,
+      hasNextPage: data?.hasNextPage || false
+    });
   } catch (err) {
     console.error('Airing fetch error:', err);
     res.status(500).json({ error: 'Failed to fetch airing anime' });
   }
 });
 
-// Get top rated anime
-app.get('/api/top-rated', async (req, res) => {
+// Most popular
+app.get('/api/popular', async (req, res) => {
   try {
     const { page = 1 } = req.query;
-    const { skip, limit, page: currentPage } = paginate(page, 10);
-
-    const results = await Anime.find(
-      { MALScore: { $ne: '?' } },
-      DEFAULT_FIELDS
-    ).sort({ MALScore: -1 }).skip(skip).limit(limit);
-
-    res.json({ results, page: currentPage });
-  } catch (err) {
-    console.error('Top rated fetch error:', err);
-    res.status(500).json({ error: 'Failed to fetch top rated' });
-  }
-});
-
-// Get random anime
-app.get('/api/random', async (req, res) => {
-  try {
-    const count = req.query.count ? Math.min(parseInt(req.query.count), 20) : 1;
+    const data = await fetchHiAnime(`/category/most-popular?page=${page}`);
     
-    const results = await Anime.aggregate([
-      { $sample: { size: count } },
-      { $project: { ...DEFAULT_FIELDS, ep: { $size: '$ep' } } }
-    ]);
-
-    if (count === 1) {
-      res.json(results[0] || null);
-    } else {
-      res.json(results);
-    }
-  } catch (err) {
-    console.error('Random fetch error:', err);
-    res.status(500).json({ error: 'Failed to fetch random anime' });
-  }
-});
-
-// Check if anime exists by name
-app.get('/api/check', async (req, res) => {
-  try {
-    const { name } = req.query;
-    if (!name) {
-      return res.json({ exists: false });
-    }
-
-    const anime = await Anime.findOne(
-      { Name: new RegExp(`^${name}$`, 'i') },
-      { _id: 1, ep: 1 }
-    );
-
-    if (!anime) {
-      return res.json({ exists: false });
-    }
-
     res.json({
-      exists: true,
-      id: anime._id,
-      epCount: anime.ep?.length || 0
+      results: data?.animes?.map(normalizeAnime) || [],
+      page: data?.currentPage || 1,
+      totalPages: data?.totalPages || 1,
+      hasNextPage: data?.hasNextPage || false
     });
   } catch (err) {
-    console.error('Check error:', err);
-    res.status(500).json({ error: 'Check failed' });
+    console.error('Popular fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch popular anime' });
   }
 });
 
-// Get all anime (paginated)
-app.get('/api/all', async (req, res) => {
+// Most favorite
+app.get('/api/favorite', async (req, res) => {
   try {
     const { page = 1 } = req.query;
-    const { skip, limit, page: currentPage } = paginate(page);
-
-    const results = await Anime.find({}, DEFAULT_FIELDS)
-      .sort({ updatedAt: -1 })
-      .skip(skip)
-      .limit(limit);
-
-    const total = await Anime.countDocuments();
-
+    const data = await fetchHiAnime(`/category/most-favorite?page=${page}`);
+    
     res.json({
-      results,
-      page: currentPage,
-      totalPages: Math.ceil(total / limit),
-      total
+      results: data?.animes?.map(normalizeAnime) || [],
+      page: data?.currentPage || 1,
+      totalPages: data?.totalPages || 1,
+      hasNextPage: data?.hasNextPage || false
     });
   } catch (err) {
-    console.error('All anime fetch error:', err);
-    res.status(500).json({ error: 'Failed to fetch anime' });
+    console.error('Favorite fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch favorite anime' });
   }
 });
 
-// ============================================
-// JIKAN API INTEGRATION (External MAL Data)
-// ============================================
-async function fetchFromJikan(endpoint) {
+// Completed anime
+app.get('/api/completed', async (req, res) => {
   try {
-    const response = await fetch(`https://api.jikan.moe/v4${endpoint}`);
-    if (!response.ok) return null;
-    const data = await response.json();
-    return data.data;
-  } catch (err) {
-    console.error('Jikan API error:', err.message);
-    return null;
-  }
-}
-
-// Get enhanced details with Jikan data
-app.get('/api/anime/:id/details', async (req, res) => {
-  try {
-    const { id } = req.params;
+    const { page = 1 } = req.query;
+    const data = await fetchHiAnime(`/category/completed?page=${page}`);
     
-    let query;
-    if (!isNaN(id)) {
-      query = { _id: Number(id) };
-    } else {
-      query = { finder: id };
-    }
-
-    const anime = await Anime.findOne(query, {
-      Genres: 1, Cover: 1, Synonyms: 1, Producers: 1, Premiered: 1,
-      Aired: 1, Duration: 1, Status: 1, Studios: 1, Name: 1, ImagePath: 1,
-      DescripTion: 1, _id: 1, MALScore: 1, RatingsNum: 1, finder: 1, MALID: 1,
-      epCount: { $size: '$ep' }
-    });
-
-    if (!anime) {
-      return res.status(404).json({ error: 'Anime not found' });
-    }
-
-    const malId = anime.MALID || anime._id;
-    
-    // Fetch Jikan data in parallel
-    const [jikanDetails, jikanCharacters] = await Promise.all([
-      fetchFromJikan(`/anime/${malId}`),
-      fetchFromJikan(`/anime/${malId}/characters`).then(data => data?.slice(0, 10) || [])
-    ]);
-
     res.json({
-      local: anime,
-      jikan: jikanDetails,
-      characters: jikanCharacters
+      results: data?.animes?.map(normalizeAnime) || [],
+      page: data?.currentPage || 1,
+      totalPages: data?.totalPages || 1,
+      hasNextPage: data?.hasNextPage || false
     });
   } catch (err) {
-    console.error('Details fetch error:', err);
-    res.status(500).json({ error: 'Failed to fetch details' });
+    console.error('Completed fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch completed anime' });
+  }
+});
+
+// Subbed anime
+app.get('/api/subbed', async (req, res) => {
+  try {
+    const { page = 1 } = req.query;
+    const data = await fetchHiAnime(`/category/subbed-anime?page=${page}`);
+    
+    res.json({
+      results: data?.animes?.map(normalizeAnime) || [],
+      page: data?.currentPage || 1,
+      totalPages: data?.totalPages || 1,
+      hasNextPage: data?.hasNextPage || false
+    });
+  } catch (err) {
+    console.error('Subbed fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch subbed anime' });
+  }
+});
+
+// Dubbed anime
+app.get('/api/dubbed', async (req, res) => {
+  try {
+    const { page = 1 } = req.query;
+    const data = await fetchHiAnime(`/category/dubbed-anime?page=${page}`);
+    
+    res.json({
+      results: data?.animes?.map(normalizeAnime) || [],
+      page: data?.currentPage || 1,
+      totalPages: data?.totalPages || 1,
+      hasNextPage: data?.hasNextPage || false
+    });
+  } catch (err) {
+    console.error('Dubbed fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch dubbed anime' });
+  }
+});
+
+// Movies
+app.get('/api/movies', async (req, res) => {
+  try {
+    const { page = 1 } = req.query;
+    const data = await fetchHiAnime(`/category/movie?page=${page}`);
+    
+    res.json({
+      results: data?.animes?.map(normalizeAnime) || [],
+      page: data?.currentPage || 1,
+      totalPages: data?.totalPages || 1,
+      hasNextPage: data?.hasNextPage || false
+    });
+  } catch (err) {
+    console.error('Movies fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch movies' });
+  }
+});
+
+// TV Series
+app.get('/api/tv', async (req, res) => {
+  try {
+    const { page = 1 } = req.query;
+    const data = await fetchHiAnime(`/category/tv?page=${page}`);
+    
+    res.json({
+      results: data?.animes?.map(normalizeAnime) || [],
+      page: data?.currentPage || 1,
+      totalPages: data?.totalPages || 1,
+      hasNextPage: data?.hasNextPage || false
+    });
+  } catch (err) {
+    console.error('TV fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch TV series' });
+  }
+});
+
+// OVA
+app.get('/api/ova', async (req, res) => {
+  try {
+    const { page = 1 } = req.query;
+    const data = await fetchHiAnime(`/category/ova?page=${page}`);
+    
+    res.json({
+      results: data?.animes?.map(normalizeAnime) || [],
+      page: data?.currentPage || 1,
+      totalPages: data?.totalPages || 1,
+      hasNextPage: data?.hasNextPage || false
+    });
+  } catch (err) {
+    console.error('OVA fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch OVA' });
+  }
+});
+
+// ONA
+app.get('/api/ona', async (req, res) => {
+  try {
+    const { page = 1 } = req.query;
+    const data = await fetchHiAnime(`/category/ona?page=${page}`);
+    
+    res.json({
+      results: data?.animes?.map(normalizeAnime) || [],
+      page: data?.currentPage || 1,
+      totalPages: data?.totalPages || 1,
+      hasNextPage: data?.hasNextPage || false
+    });
+  } catch (err) {
+    console.error('ONA fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch ONA' });
+  }
+});
+
+// Specials
+app.get('/api/special', async (req, res) => {
+  try {
+    const { page = 1 } = req.query;
+    const data = await fetchHiAnime(`/category/special?page=${page}`);
+    
+    res.json({
+      results: data?.animes?.map(normalizeAnime) || [],
+      page: data?.currentPage || 1,
+      totalPages: data?.totalPages || 1,
+      hasNextPage: data?.hasNextPage || false
+    });
+  } catch (err) {
+    console.error('Special fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch specials' });
   }
 });
 
@@ -486,39 +636,36 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================
-// DATABASE CONNECTION & SERVER START
+// SERVER START
 // ============================================
-const MONGO_URI = process.env.MONGODB_URI || process.env.mongoDB || process.env.mongoToken;
-
-if (!MONGO_URI) {
-  console.error('MongoDB URI not found. Set MONGODB_URI in .env file');
-  process.exit(1);
-}
-
-mongoose.connect(MONGO_URI)
-  .then(() => {
-    console.log('Connected to MongoDB');
-    app.listen(PORT, () => {
-      console.log(`Anime API running on http://localhost:${PORT}`);
-      console.log('\nAvailable endpoints:');
-      console.log('  GET /api/health          - Health check');
-      console.log('  GET /api/home            - Home page data');
-      console.log('  GET /api/total           - Total anime count');
-      console.log('  GET /api/all             - All anime (paginated)');
-      console.log('  GET /api/anime/:id       - Get anime by ID or slug');
-      console.log('  GET /api/anime/:id/info  - Get anime info (no episodes)');
-      console.log('  GET /api/anime/:id/episodes - Get episodes only');
-      console.log('  GET /api/anime/:id/details  - Get enhanced details with Jikan');
-      console.log('  GET /api/search?q=       - Search anime');
-      console.log('  GET /api/search/quick?q= - Quick search (autocomplete)');
-      console.log('  GET /api/genre/:genre    - Get by genre');
-      console.log('  GET /api/airing          - Currently airing');
-      console.log('  GET /api/top-rated       - Top rated anime');
-      console.log('  GET /api/random          - Random anime');
-      console.log('  GET /api/check?name=     - Check if anime exists');
-    });
-  })
-  .catch(err => {
-    console.error('MongoDB connection error:', err);
-    process.exit(1);
-  });
+app.listen(PORT, () => {
+  console.log(`Anime API running on http://localhost:${PORT}`);
+  console.log(`Provider: HiAnime API (${HIANIME_API})`);
+  console.log('\nAvailable endpoints:');
+  console.log('  GET /api/health                    - Health check');
+  console.log('  GET /api/home                      - Home page data');
+  console.log('  GET /api/anime/:id                 - Get anime info');
+  console.log('  GET /api/anime/:id/quick           - Get anime quick info');
+  console.log('  GET /api/anime/:id/episodes        - Get episodes');
+  console.log('  GET /api/anime/:id/schedule        - Get next episode schedule');
+  console.log('  GET /api/episode/:id/servers       - Get episode servers');
+  console.log('  GET /api/episode/:id/sources       - Get streaming sources');
+  console.log('  GET /api/search?q=                 - Search anime');
+  console.log('  GET /api/search/suggest?q=         - Search suggestions');
+  console.log('  GET /api/genre/:genre              - Get by genre');
+  console.log('  GET /api/category/:category        - Get by category');
+  console.log('  GET /api/producer/:id              - Get by producer/studio');
+  console.log('  GET /api/schedule?date=            - Get schedule');
+  console.log('  GET /api/az-list/:letter           - A-Z list');
+  console.log('  GET /api/airing                    - Currently airing');
+  console.log('  GET /api/popular                   - Most popular');
+  console.log('  GET /api/favorite                  - Most favorite');
+  console.log('  GET /api/completed                 - Completed anime');
+  console.log('  GET /api/subbed                    - Subbed anime');
+  console.log('  GET /api/dubbed                    - Dubbed anime');
+  console.log('  GET /api/movies                    - Movies');
+  console.log('  GET /api/tv                        - TV series');
+  console.log('  GET /api/ova                       - OVA');
+  console.log('  GET /api/ona                       - ONA');
+  console.log('  GET /api/special                   - Specials');
+});

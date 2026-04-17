@@ -1,25 +1,20 @@
 {
   "name": "anime-api",
-  "version": "1.0.0",
-  "description": "Simple Anime Streaming API Server",
+  "version": "2.0.0",
+  "description": "Simple Anime API using HiAnime provider - NO database required",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "node --watch server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.21.0",
-    "mongoose": "^8.7.0"
+    "express": "^4.21.0"
   },
-  "devDependencies": {
-    "nodemon": "^3.1.4"
+  "engines": {
+    "node": ">=18.0.0"
   },
-  "keywords": [
-    "anime",
-    "api",
-    "streaming"
-  ],
+  "keywords": ["anime", "api", "hianime", "streaming"],
   "license": "MIT"
 }
